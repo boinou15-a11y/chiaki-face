@@ -29,7 +29,7 @@ import java.security.MessageDigest
 class FaceInputServer(
 	private val port: Int,
 	private val key: String,
-	private val onState: (ControllerState) -> Unit,
+	private val onState: (ControllerState, Boolean) -> Unit, // state, whether it carries motion (roll) data
 	private val onIdle: () -> Unit
 )
 {
@@ -305,8 +305,15 @@ class FaceInputServer(
 		val o = try { JSONObject(text) } catch(e: Exception) { return }
 		val ls = o.optJSONArray("ls")
 		val rs = o.optJSONArray("rs")
+		var buttons = 0U
+		if(o.optDouble("cross", 0.0) > 0.5)
+			buttons = buttons or ControllerState.BUTTON_CROSS
+		if(o.optDouble("square", 0.0) > 0.5)
+			buttons = buttons or ControllerState.BUTTON_BOX
+		if(o.optDouble("triangle", 0.0) > 0.5)
+			buttons = buttons or ControllerState.BUTTON_PYRAMID
 		val state = ControllerState(
-			buttons = if(o.optDouble("cross", 0.0) > 0.5) ControllerState.BUTTON_CROSS else 0U,
+			buttons = buttons,
 			l2State = trigger(o, "l2"),
 			r2State = trigger(o, "r2"),
 			leftX = axis(ls, 0),
@@ -314,6 +321,24 @@ class FaceInputServer(
 			rightX = axis(rs, 0),
 			rightY = axis(rs, 1)
 		)
-		onState(state)
+
+		// "roll" is the controller tilt in degrees (positive = tilted right). It is turned into
+		// fake motion data: gravity direction plus an orientation rotated about the forward axis.
+		val hasMotion = o.has("roll")
+		if(hasMotion)
+		{
+			val rad = Math.toRadians(o.optDouble("roll", 0.0).coerceIn(-90.0, 90.0))
+			state.accelX = (-Math.sin(rad)).toFloat()
+			state.accelY = Math.cos(rad).toFloat()
+			state.accelZ = 0.0f
+			state.gyroX = 0.0f
+			state.gyroY = 0.0f
+			state.gyroZ = 0.0f
+			state.orientX = 0.0f
+			state.orientY = 0.0f
+			state.orientZ = Math.sin(-rad / 2.0).toFloat()
+			state.orientW = Math.cos(rad / 2.0).toFloat()
+		}
+		onState(state, hasMotion)
 	}
 }

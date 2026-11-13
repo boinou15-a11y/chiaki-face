@@ -47,7 +47,22 @@ class StreamInput(val context: Context, val preferences: Preferences)
 		if(motionControllerState.r2State > 0U)
 			controllerState.r2State = motionControllerState.r2State
 
-		return controllerState or touchControllerState or faceControllerState
+		val combined = controllerState or touchControllerState or faceControllerState
+		if(faceMotionActive)
+		{
+			// the face page supplies the controller motion (head roll), so ignore the phone's own sensors
+			combined.accelX = faceControllerState.accelX
+			combined.accelY = faceControllerState.accelY
+			combined.accelZ = faceControllerState.accelZ
+			combined.gyroX = faceControllerState.gyroX
+			combined.gyroY = faceControllerState.gyroY
+			combined.gyroZ = faceControllerState.gyroZ
+			combined.orientX = faceControllerState.orientX
+			combined.orientY = faceControllerState.orientY
+			combined.orientZ = faceControllerState.orientZ
+			combined.orientW = faceControllerState.orientW
+		}
+		return combined
 	}
 
 	private val sensorControllerState = ControllerState() // from Motion Sensors
@@ -68,13 +83,14 @@ class StreamInput(val context: Context, val preferences: Preferences)
 			controllerStateUpdated()
 		}
 
+	private var faceMotionActive = false // true while the face page is sending roll/motion data
 	private val mainHandler = Handler(Looper.getMainLooper())
 	private val faceInputPort = 8765
 	private val faceInputServer = FaceInputServer(
 		faceInputPort,
 		faceInputKey(),
-		onState = { state -> mainHandler.post { faceControllerState = state } },
-		onIdle = { mainHandler.post { faceControllerState = ControllerState() } }
+		onState = { state, hasMotion -> mainHandler.post { faceMotionActive = hasMotion; faceControllerState = state } },
+		onIdle = { mainHandler.post { faceMotionActive = false; faceControllerState = ControllerState() } }
 	)
 
 	// random per-install key so other devices on the Wi-Fi can't inject input
@@ -169,6 +185,7 @@ class StreamInput(val context: Context, val preferences: Preferences)
 			val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
 			sensorManager.unregisterListener(sensorEventListener)
 			faceInputServer.stop()
+			faceMotionActive = false
 			faceControllerState = ControllerState()
 		}
 	}
