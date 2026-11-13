@@ -2,13 +2,21 @@ package com.metallic.chiaki.session
 
 import android.content.Context
 import android.hardware.*
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import android.view.*
+import android.widget.Toast
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.OnLifecycleEvent
 import com.metallic.chiaki.common.Preferences
 import com.metallic.chiaki.lib.ControllerState
+import java.net.Inet4Address
+import java.net.NetworkInterface
+import java.security.SecureRandom
+import java.util.Collections
 
 class StreamInput(val context: Context, val preferences: Preferences)
 {
@@ -39,7 +47,7 @@ class StreamInput(val context: Context, val preferences: Preferences)
 		if(motionControllerState.r2State > 0U)
 			controllerState.r2State = motionControllerState.r2State
 
-		return controllerState or touchControllerState
+		return controllerState or touchControllerState or faceControllerState
 	}
 
 	private val sensorControllerState = ControllerState() // from Motion Sensors
@@ -51,6 +59,60 @@ class StreamInput(val context: Context, val preferences: Preferences)
 			field = value
 			controllerStateUpdated()
 		}
+
+	// from the face-tracking page, received over WebSocket (always set on the main thread)
+	var faceControllerState = ControllerState()
+		set(value)
+		{
+			field = value
+			controllerStateUpdated()
+		}
+
+	private val mainHandler = Handler(Looper.getMainLooper())
+	private val faceInputPort = 8765
+	private val faceInputServer = FaceInputServer(
+		faceInputPort,
+		faceInputKey(),
+		onState = { state -> mainHandler.post { faceControllerState = state } },
+		onIdle = { mainHandler.post { faceControllerState = ControllerState() } }
+	)
+
+	// random per-install key so other devices on the Wi-Fi can't inject input
+	private fun faceInputKey(): String
+	{
+		val prefs = context.getSharedPreferences("face_input", Context.MODE_PRIVATE)
+		val existing = prefs.getString("key", null)
+		if(existing != null)
+			return existing
+		val created = (1000 + SecureRandom().nextInt(9000)).toString()
+		prefs.edit().putString("key", created).apply()
+		return created
+	}
+
+	private fun localIpAddress(): String?
+	{
+		return try
+		{
+			val addresses = Collections.list(NetworkInterface.getNetworkInterfaces())
+				.filter { it.isUp && !it.isLoopback }
+				.sortedBy { if(it.name.startsWith("wlan")) 0 else 1 }
+				.flatMap { Collections.list(it.inetAddresses) }
+				.filter { it is Inet4Address && !it.isLoopbackAddress }
+			addresses.firstOrNull()?.hostAddress
+		}
+		catch(e: Exception)
+		{
+			null
+		}
+	}
+
+	private fun startFaceInput()
+	{
+		faceInputServer.start()
+		val text = "Face input: ws://${localIpAddress() ?: "PHONE_IP"}:$faceInputPort/?key=${faceInputKey()}"
+		Log.i("StreamInput", text)
+		Toast.makeText(context, text, Toast.LENGTH_LONG).show()
+	}
 
 	private val swapCrossMoon = preferences.swapCrossMoon
 
@@ -98,6 +160,7 @@ class StreamInput(val context: Context, val preferences: Preferences)
 			).forEach {
 				sensorManager.registerListener(sensorEventListener, it, samplingPeriodUs)
 			}
+			startFaceInput()
 		}
 
 		@OnLifecycleEvent(Lifecycle.Event.ON_PAUSE)
@@ -105,6 +168,8 @@ class StreamInput(val context: Context, val preferences: Preferences)
 		{
 			val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
 			sensorManager.unregisterListener(sensorEventListener)
+			faceInputServer.stop()
+			faceControllerState = ControllerState()
 		}
 	}
 
